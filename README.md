@@ -57,6 +57,61 @@ python formation_tracker.py --video input.mp4 \
 
 > 若不提供 `--manual-corners`，程序会使用整张画面作为平面近似，俯视图是“相对坐标”的简化版本。
 
+### 3) 调整检测阈值
+
+```bash
+python formation_tracker.py --video input.mp4 --conf-thres 0.4
+```
+
+### 4) 防止点位突然跳动（推荐）
+
+```bash
+python formation_tracker.py --video input.mp4 --max-jump-px 80 --smooth-alpha 0.3
+```
+
+- `--max-jump-px`：若新点距离上一帧太远，视为异常跳点并忽略（避免跳点）。
+- `--smooth-alpha`：指数平滑系数，越小越稳定，越大越灵敏；并会额外忽略左上角异常点。
+
+### 5) 放大俯视点位
+
+```bash
+python formation_tracker.py --video input.mp4 --marker-radius 24
+```
+
+- `--marker-radius`：俯视图上人物圆点半径。
+
+
+### 7) 只追踪你指定的人（解决多抓到伴舞）
+
+先跑一次并看终端打印的 `index=...`（第一帧的人物索引），再指定你要的成员：
+
+```bash
+python formation_tracker.py --video input.mp4 --selection-mode pick --pick-indexes 0,1,2,3
+```
+
+- `--selection-mode pick`：启用“开场选择成员”模式。
+- `--pick-indexes`：第一帧检测到的人物索引（逗号分隔）。
+- 该模式会只输出这些成员的点位，减少伴舞/误检导致的“多一个人”。
+
+### 6) QuickTime 无法播放时（编码器相容性）
+
+```bash
+python formation_tracker.py --video input.mp4 --codec avc1
+```
+
+- 可选编码器：`avc1`、`H264`、`mp4v`、`MJPG`
+- 程式会自动尝试你指定的编码器，失败会自动 fallback 到其他编码器，并在终端打印 `[Writer] ... uses codec: ...`
+
+---
+
+## 方法说明（对应你要的下一步）
+
+1. 使用 `yolov8n-pose.pt` + ByteTrack 做人物追踪并获得稳定 ID。
+2. 每个人使用**整个人物框的中心点**作为位置（不再使用头部关键点）。
+3. 将框中心点通过单应性矩阵（homography）映射到俯视平面。
+4. 对俯视坐标做异常跳点抑制 + 平滑（超大跳跃直接忽略、越界点忽略、左上角异常点保护）。
+5. 俯视画面只绘制当前时刻的实心圆点与 ID，不绘制任何轨迹线。
+6. 可选 `--selection-mode pick`，只追踪你在第一帧指定的成员，避免伴舞或误检混入。
 ### 3) 调整检测与关键点阈值
 
 ```bash
