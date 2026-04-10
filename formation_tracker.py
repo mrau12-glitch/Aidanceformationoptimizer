@@ -1,5 +1,6 @@
 import argparse
 from typing import Dict, List, Optional, Tuple
+
 import cv2
 import numpy as np
 from ultralytics import YOLO
@@ -10,14 +11,30 @@ def parse_args() -> argparse.Namespace:
         description="Track dancers by bbox center and render a top-down formation view."
     )
     parser.add_argument("--video", required=True, help="Input video path")
-    parser.add_argument("--pose-model", default="yolov8n-pose.pt", help="Ultralytics model path")
-    parser.add_argument("--output-annotated", default="annotated_tracking.mp4")
-    parser.add_argument("--output-topdown-video", default="topdown_tracking.mp4")
-    parser.add_argument("--output-topdown-image", default="topdown_formation_snapshot.png")
-    parser.add_argument("--topdown-size", default="900x600")
-    parser.add_argument("--conf-thres", type=float, default=0.35)
-    parser.add_argument("--show", action="store_true")
-    parser.add_argument("--codec", default="avc1")
+    parser.add_argument(
+        "--pose-model",
+        default="yolov8n-pose.pt",
+        help="Ultralytics model path used for tracking (default: yolov8n-pose.pt)",
+    )
+    parser.add_argument(
+        "--output-annotated",
+        default="annotated_tracking.mp4",
+        help="Output annotated tracking video path",
+    )
+    parser.add_argument(
+        "--output-topdown-video",
+        default="topdown_tracking.mp4",
+        help="Output top-down tracking video path",
+    )
+    parser.add_argument(
+        "--output-topdown-image",
+        default="topdown_formation_snapshot.png",
+        help="Output final top-down formation snapshot path",
+    )
+    parser.add_argument("--topdown-size", default="900x600", help="Top-down canvas size")
+    parser.add_argument("--conf-thres", type=float, default=0.35, help="Detection confidence")
+    parser.add_argument("--show", action="store_true", help="Show live windows")
+    parser.add_argument("--codec", default="avc1", help="Preferred output codec")
     parser.add_argument(
         "--manual-corners",
         nargs=8,
@@ -25,14 +42,33 @@ def parse_args() -> argparse.Namespace:
         metavar=("x1", "y1", "x2", "y2", "x3", "y3", "x4", "y4"),
         help="Optional source plane points in video: TL TR BR BL",
     )
-    parser.add_argument("--marker-radius", type=int, default=24)
-    parser.add_argument("--max-jump-px", type=float, default=60.0)
-    parser.add_argument("--smooth-alpha", type=float, default=0.25)
+    parser.add_argument("--marker-radius", type=int, default=24, help="Top-down marker radius")
+    parser.add_argument("--max-jump-px", type=float, default=60.0, help="Top-down jump gate")
+    parser.add_argument("--smooth-alpha", type=float, default=0.25, help="EMA factor")
 
-    # pick mode: choose only specific dancers from first frame indexes
-    parser.add_argument("--selection-mode", choices=["none", "pick"], default="none")
-    parser.add_argument("--pick-indexes", default="")
-    parser.add_argument("--max-assign-dist", type=float, default=180.0)
+    parser.add_argument(
+        "--selection-mode",
+        choices=["none", "pick"],
+        default="none",
+        help="none: normal tracking IDs, pick: select dancers at start and track only them",
+    )
+    parser.add_argument(
+        "--pick-indexes",
+        default="",
+        help="When selection-mode=pick, comma-separated indexes from first-frame detections, e.g. 0,1,2,3",
+    )
+    parser.add_argument(
+        "--max-assign-dist",
+        type=float,
+        default=180.0,
+        help="Max pixel distance for assigning a detection to a picked dancer",
+    )
+    parser.add_argument(
+        "--pick-start-sec",
+        type=float,
+        default=30.0,
+        help="When selection-mode=pick, pick candidates from this second (default: 30)",
+    )
 
     return parser.parse_args()
 
@@ -179,10 +215,22 @@ def main() -> None:
     if not ret0:
         raise RuntimeError("Cannot read first frame")
 
+    pick_frame = first_frame
+    if args.selection_mode == "pick":
+        pick_frame_idx = int(max(0.0, args.pick_start_sec) * (cap.get(cv2.CAP_PROP_FPS) or 30.0))
+        cap.set(cv2.CAP_PROP_POS_FRAMES, pick_frame_idx)
+        ret_pick, frame_pick = cap.read()
+        if ret_pick:
+            pick_frame = frame_pick
+            print(f"[Pick] using frame at ~{args.pick_start_sec:.1f}s for dancer picking")
+        else:
+            print("[Pick] cannot read requested pick-start frame, fallback to first frame")
+        cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+
     picked_slot_centers: Dict[int, Tuple[float, float]] = {}
     if args.selection_mode == "pick":
-        first_boxes = detect_people_boxes(model, first_frame, args.conf_thres)
-        print(f"[Pick] first frame persons: {len(first_boxes)}")
+        first_boxes = detect_people_boxes(model, pick_frame, args.conf_thres)
+        print(f"[Pick] candidate frame persons: {len(first_boxes)}")
         for i, b in enumerate(first_boxes):
             x1, y1, x2, y2 = map(int, b)
             print(f"  index={i} box=({x1},{y1},{x2},{y2})")
@@ -209,7 +257,7 @@ def main() -> None:
 
     colors = generate_colors()
     stable_points: Dict[int, Tuple[float, float]] = {}
-    homography = build_homography(first_frame.shape, topdown_w, topdown_h, args.manual_corners)
+    homography: Optional[np.ndarray] = build_homography(first_frame.shape, topdown_w, topdown_h, args.manual_corners)
     last_topdown_frame = make_topdown_canvas(topdown_w, topdown_h)
 
     cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
@@ -263,7 +311,7 @@ def main() -> None:
                 cv2.circle(annotated, (int(center[0]), int(center[1])), 6, color, -1)
 
                 raw_top_pt = to_topdown(center, homography)
-                top_pt = stabilize_point(tid, raw_top_pt, stable_points, args.max-jump-px, args.smooth_alpha, topdown_w, topdown_h)
+                top_pt = stabilize_point(tid, raw_top_pt, stable_points, args.max_jump_px, args.smooth_alpha, topdown_w, topdown_h)
                 if top_pt is None:
                     continue
                 cv2.circle(topdown_frame, top_pt, args.marker_radius, color, -1)
