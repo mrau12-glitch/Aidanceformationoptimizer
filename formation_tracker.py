@@ -1,4 +1,5 @@
 import argparse
+from collections import defaultdict
 from typing import Dict, List, Optional, Tuple
 
 import cv2
@@ -31,8 +32,8 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--output-topdown-image",
-        default="topdown_formation_snapshot.png",
-        help="Output final top-down formation snapshot path",
+        default="topdown_trajectories.png",
+        help="Output top-down trajectory image path",
     )
     parser.add_argument(
         "--topdown-size",
@@ -59,24 +60,6 @@ def parse_args() -> argparse.Namespace:
             "Optional source plane points in video in order: top-left, top-right,"
             " bottom-right, bottom-left"
         ),
-    )
-    parser.add_argument(
-        "--marker-radius",
-        type=int,
-        default=14,
-        help="Circle radius for each dancer in top-down view",
-    )
-    parser.add_argument(
-        "--max-jump-px",
-        type=float,
-        default=90.0,
-        help="Reject raw top-down updates farther than this distance from last point",
-    )
-    parser.add_argument(
-        "--smooth-alpha",
-        type=float,
-        default=0.35,
-        help="EMA smoothing factor for top-down point update (0-1)",
     )
     return parser.parse_args()
 
@@ -132,33 +115,6 @@ def to_topdown(point_xy: Tuple[float, float], homography: np.ndarray) -> Tuple[i
     return int(mapped[0]), int(mapped[1])
 
 
-def stabilize_point(
-    track_id: int,
-    raw_pt: Tuple[int, int],
-    last_points: Dict[int, Tuple[float, float]],
-    max_jump_px: float,
-    smooth_alpha: float,
-) -> Tuple[int, int]:
-    if track_id not in last_points:
-        last_points[track_id] = (float(raw_pt[0]), float(raw_pt[1]))
-        return raw_pt
-
-    prev_x, prev_y = last_points[track_id]
-    dx = raw_pt[0] - prev_x
-    dy = raw_pt[1] - prev_y
-    dist = float(np.hypot(dx, dy))
-
-    # Outlier gating: if jump is too large, keep previous stable position.
-    if dist > max_jump_px:
-        return int(prev_x), int(prev_y)
-
-    alpha = min(1.0, max(0.0, smooth_alpha))
-    smoothed_x = alpha * raw_pt[0] + (1.0 - alpha) * prev_x
-    smoothed_y = alpha * raw_pt[1] + (1.0 - alpha) * prev_y
-    last_points[track_id] = (smoothed_x, smoothed_y)
-    return int(smoothed_x), int(smoothed_y)
-
-
 def make_topdown_canvas(width: int, height: int) -> np.ndarray:
     canvas = np.zeros((height, width, 3), dtype=np.uint8)
     canvas[:] = (20, 20, 20)
@@ -193,9 +149,8 @@ def main() -> None:
     )
 
     colors = generate_colors()
-    stable_points: Dict[int, Tuple[float, float]] = {}
+    tracks_topdown: Dict[int, List[Tuple[int, int]]] = defaultdict(list)
     homography: Optional[np.ndarray] = None
-    last_topdown_frame = make_topdown_canvas(topdown_w, topdown_h)
 
     while True:
         ret, frame = cap.read()
@@ -255,20 +210,23 @@ def main() -> None:
                     hx, hy = int(head_xy[0]), int(head_xy[1])
                     cv2.circle(annotated, (hx, hy), 5, color, -1)
 
-                    raw_top_pt = to_topdown(head_xy, homography)
-                    top_pt = stabilize_point(
-                        tid,
-                        raw_top_pt,
-                        stable_points,
-                        args.max_jump_px,
-                        args.smooth_alpha,
-                    )
+                    top_pt = to_topdown(head_xy, homography)
+                    tracks_topdown[tid].append(top_pt)
 
-                    cv2.circle(topdown_frame, top_pt, args.marker_radius, color, -1)
+                    if len(tracks_topdown[tid]) >= 2:
+                        cv2.polylines(
+                            topdown_frame,
+                            [np.array(tracks_topdown[tid], dtype=np.int32)],
+                            isClosed=False,
+                            color=color,
+                            thickness=2,
+                        )
+
+                    cv2.circle(topdown_frame, top_pt, 7, color, -1)
                     cv2.putText(
                         topdown_frame,
                         str(tid),
-                        (top_pt[0] + args.marker_radius + 4, top_pt[1] - args.marker_radius),
+                        (top_pt[0] + 8, top_pt[1] - 8),
                         cv2.FONT_HERSHEY_SIMPLEX,
                         0.6,
                         color,
@@ -277,7 +235,6 @@ def main() -> None:
 
         out_annotated.write(annotated)
         out_topdown.write(topdown_frame)
-        last_topdown_frame = topdown_frame.copy()
 
         if args.show:
             cv2.imshow("Annotated Tracking", annotated)
@@ -285,7 +242,30 @@ def main() -> None:
             if cv2.waitKey(1) & 0xFF == ord("q"):
                 break
 
-    cv2.imwrite(args.output_topdown_image, last_topdown_frame)
+    final_map = make_topdown_canvas(topdown_w, topdown_h)
+    for tid, points in tracks_topdown.items():
+        if not points:
+            continue
+        color = colors[tid % len(colors)]
+        cv2.polylines(
+            final_map,
+            [np.array(points, dtype=np.int32)],
+            isClosed=False,
+            color=color,
+            thickness=2,
+        )
+        cv2.circle(final_map, points[-1], 8, color, -1)
+        cv2.putText(
+            final_map,
+            f"ID {tid}",
+            (points[-1][0] + 8, points[-1][1] - 8),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.6,
+            color,
+            2,
+        )
+
+    cv2.imwrite(args.output_topdown_image, final_map)
 
     cap.release()
     out_annotated.release()
@@ -295,7 +275,7 @@ def main() -> None:
     print("Done.")
     print(f"Annotated video: {args.output_annotated}")
     print(f"Top-down video: {args.output_topdown_video}")
-    print(f"Top-down formation snapshot image: {args.output_topdown_image}")
+    print(f"Top-down trajectories image: {args.output_topdown_image}")
 
 
 if __name__ == "__main__":

@@ -3,7 +3,7 @@
 这个项目目前提供两种能力：
 
 1. 旧版：只画出人物框（`train_0.py`）。
-2. 新版：识别每位人物头部位置、进行 ID 追踪，并输出俯视走位视频与队形快照（`formation_tracker.py`）。
+2. 新版：识别每位人物头部位置、进行 ID 追踪，并输出俯视走位视频与轨迹图（`formation_tracker.py`）。
 
 ---
 
@@ -26,8 +26,8 @@ python formation_tracker.py --video /path/to/your_dance_video.mp4
 默认会输出：
 
 - `annotated_tracking.mp4`：原视频 + 人物框 + 头部点 + track ID
-- `topdown_tracking.mp4`：俯视动态队形变化视频（仅显示当前位置，不画轨迹）
-- `topdown_formation_snapshot.png`：最后一帧的俯视队形快照
+- `topdown_tracking.mp4`：俯视动态走位视频
+- `topdown_trajectories.png`：整段视频的最终轨迹图
 
 ---
 
@@ -63,23 +63,6 @@ python formation_tracker.py --video input.mp4 \
 python formation_tracker.py --video input.mp4 --conf-thres 0.4 --kpt-conf-thres 0.4
 ```
 
-### 4) 防止点位突然跳动（推荐）
-
-```bash
-python formation_tracker.py --video input.mp4 --max-jump-px 80 --smooth-alpha 0.3
-```
-
-- `--max-jump-px`：若新点距离上一帧太远，视为异常跳点并忽略。
-- `--smooth-alpha`：指数平滑系数，越小越稳定，越大越灵敏。
-
-### 5) 放大俯视点位
-
-```bash
-python formation_tracker.py --video input.mp4 --marker-radius 18
-```
-
-- `--marker-radius`：俯视图上人物圆点半径。
-
 ---
 
 ## 方法说明（对应你要的下一步）
@@ -88,7 +71,7 @@ python formation_tracker.py --video input.mp4 --marker-radius 18
 2. 从头部关键点（鼻子/眼睛/耳朵）中筛选高置信点，取平均作为“头部位置”。
 3. 使用 ByteTrack 给每个人分配稳定 ID。
 4. 将头部点通过单应性矩阵（homography）映射到俯视平面。
-5. 对俯视坐标做异常跳点抑制 + 平滑，只显示当前队形变化（不显示轨迹线）。
+5. 累积每个 ID 的历史点，生成轨迹线，最终可视化站位变化。
 
 ---
 
