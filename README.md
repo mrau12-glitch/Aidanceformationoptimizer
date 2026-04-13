@@ -3,7 +3,7 @@
 这个项目目前提供两种能力：
 
 1. 旧版：只画出人物框（`train_0.py`）。
-2. 新版：识别每位人物框中心点、进行 ID 追踪，并输出俯视队形变化视频与队形快照（`formation_tracker.py`）。
+2. 新版：识别每位人物头部位置、进行 ID 追踪，并输出俯视走位视频与轨迹图（`formation_tracker.py`）。
 
 ---
 
@@ -25,11 +25,9 @@ python formation_tracker.py --video /path/to/your_dance_video.mp4
 
 默认会输出：
 
-- `annotated_tracking.mp4`：原视频 + 人物框 + 框中心点 + track ID
-- `topdown_tracking.mp4`：俯视动态队形变化视频（仅显示当前位置，不画轨迹）
-- `topdown_formation_snapshot.png`：最后一帧的俯视队形快照
-
-运行时终端会持续显示进度（`[Progress] ...`），处理完成会打印 `Done.` 与输出文件路径。
+- `annotated_tracking.mp4`：原视频 + 人物框 + 头部点 + track ID
+- `topdown_tracking.mp4`：俯视动态走位视频
+- `topdown_trajectories.png`：整段视频的最终轨迹图
 
 ---
 
@@ -92,21 +90,8 @@ python formation_tracker.py --video input.mp4 --selection-mode pick --pick-index
 ```
 
 - `--selection-mode pick`：启用“开场选择成员”模式。
-- `--pick-indexes`：选人画面中检测到的人物索引（逗号分隔）。
+- `--pick-indexes`：第一帧检测到的人物索引（逗号分隔）。
 - 该模式会只输出这些成员的点位，减少伴舞/误检导致的“多一个人”。
-- 在 `pick` 模式下，编号会固定显示为 `1,2,3,4...`（按 `--pick-indexes` 顺序），并通过追踪 ID + 最小距离分配，尽量维持同一个人全程同编号。
-- 若多人重叠，俯视图会对显示位置做轻微展开，避免圆圈完全重叠成一个（仅影响显示，不改变真实追踪坐标）。
-
-- 若影片开头黑屏，可用 `--pick-start-sec` + `--pick-search-sec`，从指定秒数开始自动搜索有人的画面，不需要先剪影片。
-
-```bash
-python formation_tracker.py --video input.mp4 \
-  --selection-mode pick \
-  --pick-start-sec 30 \
-  --pick-search-sec 20 \
-  --pick-indexes 0,1,2,3
-```
-
 
 ### 6) QuickTime 无法播放时（编码器相容性）
 
@@ -127,6 +112,21 @@ python formation_tracker.py --video input.mp4 --codec avc1
 4. 对俯视坐标做异常跳点抑制 + 平滑（超大跳跃直接忽略、越界点忽略、左上角异常点保护）。
 5. 俯视画面只绘制当前时刻的实心圆点与 ID，不绘制任何轨迹线。
 6. 可选 `--selection-mode pick`，只追踪你在第一帧指定的成员，避免伴舞或误检混入。
+### 3) 调整检测与关键点阈值
+
+```bash
+python formation_tracker.py --video input.mp4 --conf-thres 0.4 --kpt-conf-thres 0.4
+```
+
+---
+
+## 方法说明（对应你要的下一步）
+
+1. 使用 `yolov8n-pose.pt` 获取人体关键点。
+2. 从头部关键点（鼻子/眼睛/耳朵）中筛选高置信点，取平均作为“头部位置”。
+3. 使用 ByteTrack 给每个人分配稳定 ID。
+4. 将头部点通过单应性矩阵（homography）映射到俯视平面。
+5. 累积每个 ID 的历史点，生成轨迹线，最终可视化站位变化。
 
 ---
 
